@@ -20,6 +20,7 @@ import {
   ReadableStream,
   WritableStream,
 } from 'node:stream/web';
+const proxyIp = process.env.PROXY_IP || '';
 const port = process.env.PORT;
 const smallRAM = process.env.SMALLRAM || false;
 const userID = process.env.UUID || '';
@@ -293,24 +294,43 @@ server.listen(
   }
 );
 
-async function connect2Remote(port, host, log: Function): Promise<Socket> {
-  return new Promise((resole, reject) => {
-    const remoteSocket = connect(
-      {
-        port: port,
-        host: host,
-        // https://github.com/nodejs/node/pull/46587
-        // autoSelectFamily: true,
-      },
-      () => {
-        log(`connected`);
-        resole(remoteSocket);
-      }
-    );
-    remoteSocket.addListener('error', () => {
-      reject('remoteSocket has error');
-    });
-  });
+async function connect2Remote(port, host, log: Function): Promise<Socket> {  
+  return new Promise((resolve, reject) => {  
+    function tryConnect(targetHost: string) {  
+      const remoteSocket = connect(  
+        {  
+          port: port,  
+          host: targetHost,  
+          // 其他选项...  
+        },  
+        () => {  
+          log(`connected to ${targetHost}`);  
+          resolve(remoteSocket);  
+        }  
+      );  
+        
+      remoteSocket.addListener('error', (error) => {  
+        // 在这里可以处理更具体的错误类型，但为简单起见，我们仅检查是否应该重试  
+        if (targetHost === host && error.code === 'ECONNREFUSED' || error.code === 'EHOSTUNREACH') {  
+          // 尝试连接到 proxyIp  
+          if (proxyIp) {  
+            // 使用 proxyIp 进行重试  
+            log(`Failed to connect to ${host}, retrying with proxy ${proxyIp}`);  
+            tryConnect(proxyIp); // 递归调用以尝试连接到 proxyIp  
+          } else {  
+            // 如果没有 proxyIp 或连接到 proxyIp 也失败，则拒绝 Promise  
+            reject('Failed to connect to host and proxy');  
+          }  
+        } else {  
+          // 对于其他类型的错误，直接拒绝 Promise  
+          reject(error);  
+        }  
+      });  
+    }  
+      
+    // 开始尝试连接到 host  
+    tryConnect(host);  
+  });  
 }
 
 async function socketAsyncWrite(ws: Duplex, chunk: Buffer) {
