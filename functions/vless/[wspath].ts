@@ -13,6 +13,8 @@ interface Env {
 
 export const onRequest: PagesFunction<Env> = async (context) => {
   const userID = context.env['UUID'];
+  const proxyIp = process.env.PROXY_IP;
+
   if (context.params.wspath !== userID) {
     return new Response(``, {
       status: 401,
@@ -57,8 +59,34 @@ export const onRequest: PagesFunction<Env> = async (context) => {
   let vlessResponseHeader = new Uint8Array([0, 0]);
   let remoteConnectionReadyResolve: Function;
 
-  // ws-->remote
+  // Function to connect to remote address, with optional retry via proxy
+  const connectToRemote = async (addressRemote, portRemote) => {
+    try {
+      remoteSocket = connect({
+        hostname: addressRemote,
+        port: portRemote,
+      });
+      log(`connected to ${addressRemote}:${portRemote}`);
+    } catch (error) {
+      if (proxyIp) {
+        log(`initial connection failed, retrying via proxy ${proxyIp}`);
+        try {
+          remoteSocket = connect({
+            hostname: proxyIp,
+            port: portRemote,
+          });
+          log(`connected to ${proxyIp}:${portRemote}`);
+        } catch (proxyError) {
+          log(`proxy connection failed`, proxyError);
+          throw proxyError;
+        }
+      } else {
+        throw error;
+      }
+    }
+  };
 
+  // ws-->remote
   readableWebSocketStream.pipeTo(
     new WritableStream({
       async write(chunk, controller) {
@@ -85,24 +113,27 @@ export const onRequest: PagesFunction<Env> = async (context) => {
         // if UDP but port not DNS port, close it
         if (isUDP && portRemote != 53) {
           controller.error('UDP proxy only enable for DNS which is port 53');
-          webSocket.close(); // server close will not casuse worker throw error
+          webSocket.close(); // server close will not cause worker throw error
           return;
         }
         if (hasError) {
           controller.error(message);
-          webSocket.close(); // server close will not casuse worker throw error
+          webSocket.close(); // server close will not cause worker throw error
           return;
         }
         vlessResponseHeader = new Uint8Array([vlessVersion![0], 0]);
         const rawClientData = chunk.slice(rawDataIndex!);
-        remoteSocket = connect({
-          hostname: addressRemote,
-          port: portRemote,
-        });
-        log(`connected`);
+
+        try {
+          await connectToRemote(addressRemote, portRemote);
+        } catch (connectionError) {
+          log('connection to remote failed', connectionError);
+          webSocket.close();
+          return;
+        }
 
         const writer = remoteSocket.writable.getWriter();
-        await writer.write(rawClientData); // first write, nomal is tls client hello
+        await writer.write(rawClientData); // first write, normal is tls client hello
         writer.releaseLock();
 
         // remoteSocket ready
@@ -186,7 +217,7 @@ function safeCloseWebSocket(ws: WebSocket) {
 }
 
 function delay(ms) {
-  return new Promise((resolve, rej) => {
+  return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
 }
