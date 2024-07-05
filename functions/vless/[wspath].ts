@@ -9,11 +9,12 @@ import { page404 } from '../util';
 interface Env {
   KV: KVNamespace;
   UUID: string;
+  PROXY_IP: string;
 }
 
 export const onRequest: PagesFunction<Env> = async (context) => {
   const userID = context.env['UUID'];
-  const proxyIp = process.env.PROXY_IP;
+  const proxyIp = context.env['PROXY_IP'];
 
   if (context.params.wspath !== userID) {
     return new Response(``, {
